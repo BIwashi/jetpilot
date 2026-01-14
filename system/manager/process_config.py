@@ -8,6 +8,7 @@ from openpilot.system.hardware import PC, TICI
 from openpilot.system.manager.process import PythonProcess, NativeProcess, DaemonProcess
 
 WEBCAM = os.getenv("USE_WEBCAM") is not None
+FAKE_PANDA = os.getenv("USE_FAKE_PANDA") is not None
 
 def driverview(started: bool, params: Params, CP: car.CarParams) -> bool:
   return started or params.get_bool("IsDriverViewEnabled")
@@ -89,11 +90,12 @@ procs = [
   PythonProcess("controlsd", "selfdrive.controls.controlsd", and_(not_joystick, iscar)),
   PythonProcess("joystickd", "tools.joystick.joystickd", or_(joystick, notcar)),
   PythonProcess("selfdrived", "selfdrive.selfdrived.selfdrived", only_onroad),
-  PythonProcess("card", "selfdrive.car.card", only_onroad),
+  PythonProcess("card", "selfdrive.car.card", only_onroad, enabled=not FAKE_PANDA),
   PythonProcess("deleter", "system.loggerd.deleter", always_run),
   PythonProcess("dmonitoringd", "selfdrive.monitoring.dmonitoringd", driverview, enabled=(WEBCAM or not PC)),
   PythonProcess("qcomgpsd", "system.qcomgpsd.qcomgpsd", qcomgps, enabled=TICI),
-  PythonProcess("pandad", "selfdrive.pandad.pandad", always_run),
+  PythonProcess("pandad", "selfdrive.pandad.pandad", always_run, enabled=not FAKE_PANDA),
+  PythonProcess("rcd", "selfdrive.rc.rcd", always_run, enabled=FAKE_PANDA),
   PythonProcess("paramsd", "selfdrive.locationd.paramsd", only_onroad),
   PythonProcess("lagd", "selfdrive.locationd.lagd", only_onroad),
   PythonProcess("ubloxd", "system.ubloxd.ubloxd", ublox, enabled=TICI),
