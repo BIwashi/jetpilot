@@ -25,3 +25,6 @@
 [submodule "opencv"]
 	path = opencv
 	url = https://github.com/opencv/opencv.git
+[submodule "pocl"]
+	path = pocl
+	url = https://github.com/pocl/pocl.git
