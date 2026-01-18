@@ -1,3 +1,4 @@
+import time
 import av
 import cv2 as cv
 
@@ -13,27 +14,35 @@ class Camera:
     self.cam_type_state = cam_type_state
     self.stream_type = stream_type
     self.cur_frame_id = 0
+    self.camera_id = camera_id
+    self.use_gst = use_gst
+    self.cap = None
+    if not self._open_capture():
+      raise RuntimeError(f"Failed to open camera {camera_id}")
 
-    print(f"Opening {cam_type_state} at {camera_id}")
-
-    if use_gst:
+  def _open_capture(self) -> bool:
+    print(f"Opening {self.cam_type_state} at {self.camera_id}")
+    if self.use_gst:
       # GStreamerパイプライン入力を許可（CSIカメラ向け）
-      self.cap = cv.VideoCapture(camera_id, cv.CAP_GSTREAMER)
+      self.cap = cv.VideoCapture(self.camera_id, cv.CAP_GSTREAMER)
     else:
-      self.cap = cv.VideoCapture(camera_id)
+      self.cap = cv.VideoCapture(self.camera_id)
 
     # GStreamerパイプラインの場合は caps で解像度/フレームレートを指定済みのため
     # set() は呼ばない。V4L2 デバイスの場合のみ設定する。
-    if not use_gst:
+    if not self.use_gst:
       self.cap.set(cv.CAP_PROP_FRAME_WIDTH, 1280.0)
       self.cap.set(cv.CAP_PROP_FRAME_HEIGHT, 720.0)
       self.cap.set(cv.CAP_PROP_FPS, 25.0)
 
     if not self.cap.isOpened():
-      raise RuntimeError(f"Failed to open camera {camera_id}")
+      self.cap.release()
+      self.cap = None
+      return False
 
     self.W = self.cap.get(cv.CAP_PROP_FRAME_WIDTH)
     self.H = self.cap.get(cv.CAP_PROP_FRAME_HEIGHT)
+    return True
 
   @classmethod
   def bgr2nv12(self, bgr):
@@ -42,12 +51,19 @@ class Camera:
 
   def read_frames(self):
     while True:
+      if self.cap is None or not self.cap.isOpened():
+        # Retry opening the camera to recover from transient capture failures.
+        if not self._open_capture():
+          time.sleep(0.5)
+          continue
       ret, frame = self.cap.read()
       if not ret:
-        break
+        self.cap.release()
+        self.cap = None
+        time.sleep(0.1)
+        continue
       # # Rotate the frame 180 degrees (flip both axes)
       # frame = cv.flip(frame, -1)
       # 反転なし
       yuv = Camera.bgr2nv12(frame)
       yield yuv.data.tobytes()
-    self.cap.release()

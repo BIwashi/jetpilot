@@ -1,7 +1,14 @@
 #!/usr/bin/env python3
 import os
 from openpilot.system.hardware import TICI
-os.environ['DEV'] = 'QCOM' if TICI else 'CPU'
+
+# Respect explicit device selection when set, otherwise default to CPU on non-TICI.
+env_dev = os.environ.get("DEV") or os.environ.get("DEVICE") or os.environ.get("TINYGRAD_DEVICE")
+if env_dev:
+  os.environ["DEV"] = env_dev
+else:
+  os.environ["DEV"] = "QCOM" if TICI else "CPU"
+os.environ["DEVICE"] = os.environ["DEV"]
 from tinygrad.tensor import Tensor
 from tinygrad.dtype import dtypes
 import time

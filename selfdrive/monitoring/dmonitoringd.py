@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
+import os
 import cereal.messaging as messaging
 from openpilot.common.params import Params
-from openpilot.common.realtime import config_realtime_process
+from openpilot.common.realtime import Ratekeeper, config_realtime_process
 from openpilot.selfdrive.monitoring.helpers import DriverMonitoring
 
 
@@ -10,6 +11,19 @@ def dmonitoringd_thread():
 
   params = Params()
   pm = messaging.PubMaster(['driverMonitoringState'])
+
+  if os.getenv("DISABLE_DMON") is not None:
+    rk = Ratekeeper(20, print_delay_threshold=None)
+    while True:
+      dat = messaging.new_message('driverMonitoringState', valid=True)
+      dm_state = dat.driverMonitoringState
+      dm_state.awarenessStatus = 1.0
+      dm_state.awarenessActive = 1.0
+      dm_state.awarenessPassive = 1.0
+      dm_state.isRHD = params.get_bool("IsRhdDetected")
+      pm.send('driverMonitoringState', dat)
+      rk.monitor_time()
+
   sm = messaging.SubMaster(['driverStateV2', 'liveCalibration', 'carState', 'selfdriveState', 'modelV2'], poll='driverStateV2')
 
   DM = DriverMonitoring(rhd_saved=params.get_bool("IsRhdDetected"), always_on=params.get_bool("AlwaysOnDM"))
