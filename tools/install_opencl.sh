@@ -4,9 +4,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 
 # llvm 18 is required to build pocl
-wget https://apt.llvm.org/llvm.sh
-chmod +x llvm.sh
-sudo ./llvm.sh 18
+curl -fsSL https://apt.llvm.org/llvm.sh | sudo bash -s -- 18
 sudo apt install -y llvm-18 llvm-18-dev llvm-18-tools clang-18
 sudo apt install -y libclang-18-dev libedit-dev
 sudo apt install -y ocl-icd-libopencl1 ocl-icd-opencl-dev
