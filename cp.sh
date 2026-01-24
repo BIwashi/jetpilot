@@ -1,8 +1,9 @@
+# export ROAD_CAM='nvarguscamerasrc sensor-id=0 ! video/x-raw(memory:NVMM), width=640, height=360, format=NV12, framerate=20/1 ! queue max-size-buffers=1 leaky=downstream ! nvvidconv flip-method=0 ! video/x-raw,format=BGRx ! videoconvert ! video/x-raw,format=BGR ! appsink max-buffers=1 drop=true sync=false'
 export ROAD_CAM='nvarguscamerasrc sensor-id=0 ! video/x-raw(memory:NVMM), width=1280, height=720, format=NV12, framerate=30/1 ! nvvidconv flip-method=0 ! video/x-raw,format=BGRx ! videoconvert ! video/x-raw,format=BGR ! appsink max-buffers=1 drop=true sync=false'
 # export ROAD_CAM='nvarguscamerasrc sensor-id=0 ! video/x-raw(memory:NVMM), width=640, height=360, format=NV12, framerate=20/1 ! queue max-size-buffers=1 leaky=downstream ! nvvidconv flip-method=0 ! video/x-raw,format=BGRx ! videoconvert ! video/x-raw,format=BGR ! appsink max-buffers=1 drop=true sync=false' \
 
 # Stop leftovers from previous runs to avoid double-start issues.
-PIDS=$(pgrep -f "system/manager/manager.py|tools.webcam.camerad|selfdrive.modeld.modeld" || true)
+PIDS=$(pgrep -f "system/manager/manager.py|tools.webcam.camerad|selfdrive.modeld.modeld|selfdrive.ui.ui|selfdrive.ui.soundd|selfdrive.ui.feedback.feedbackd|system/loggerd/loggerd|system/loggerd/encoderd|system/loggerd/stream_encoderd" || true)
 if [ -n "$PIDS" ]; then
   echo "killing old processes: $PIDS"
   kill $PIDS || true
@@ -17,6 +18,7 @@ fi
 export DISPLAY=:0
 export XAUTHORITY=/run/user/1000/gdm/Xauthority
 export RCD_RACECAR_TYPE=RAW
+export RCD_NOT_CAR=0
 export DEV=CUDA
 export DEVICE=CUDA
 export RCD_I2C_BUS=7

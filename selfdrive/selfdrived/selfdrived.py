@@ -69,7 +69,15 @@ class SelfdriveD:
     self.gps_location_service = get_gps_location_service(self.params)
     self.gps_packets = [self.gps_location_service]
     self.sensor_packets = ["accelerometer", "gyroscope"]
-    self.camera_packets = ["roadCameraState", "driverCameraState", "wideRoadCameraState"]
+    use_webcam = os.getenv("USE_WEBCAM") is not None
+    if use_webcam:
+      self.camera_packets = ["roadCameraState"]
+      if os.getenv("WIDE_CAM"):
+        self.camera_packets.append("wideRoadCameraState")
+      if os.getenv("DRIVER_CAM"):
+        self.camera_packets.append("driverCameraState")
+    else:
+      self.camera_packets = ["roadCameraState", "driverCameraState", "wideRoadCameraState"]
 
     # TODO: de-couple selfdrived with card/conflate on carState without introducing controls mismatches
     self.car_state_sock = messaging.sub_sock('carState', timeout=20)

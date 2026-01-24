@@ -11,6 +11,7 @@ from openpilot.system.ui.widgets import Widget
 from openpilot.selfdrive.ui.ui_state import ui_state
 
 CONNECTION_RETRY_INTERVAL = 0.2  # seconds between connection attempts
+STALL_TIMEOUT = 2.0  # seconds without frames before reconnect
 
 VERSION = """
 #version 300 es
@@ -81,6 +82,7 @@ class CameraView(Widget):
 
     self._texture_needs_update = True
     self.last_connection_attempt: float = 0.0
+    self._stall_since: float | None = None
     self.shader = rl.load_shader_from_memory(VERTEX_SHADER, FRAME_FRAGMENT_SHADER)
     self._texture1_loc: int = rl.get_shader_location(self.shader, "texture1") if not TICI else -1
 
@@ -189,12 +191,21 @@ class CameraView(Widget):
 
     # Try to get a new buffer without blocking
     buffer = self.client.recv(timeout_ms=0)
+    now = rl.get_time()
     if buffer:
       self._texture_needs_update = True
       self.frame = buffer
+      self._stall_since = None
     elif not self.client.is_connected():
       # ensure we clear the displayed frame when the connection is lost
       self.frame = None
+    elif self._stall_since is None:
+      self._stall_since = now
+    elif now - self._stall_since > STALL_TIMEOUT:
+      cloudlog.warning(f"VisionIPC stalled for {now - self._stall_since:.1f}s, resetting client")
+      self._reset_client()
+      self._draw_placeholder(rect)
+      return
 
     if not self.frame:
       self._draw_placeholder(rect)
@@ -294,8 +305,20 @@ class CameraView(Widget):
       cloudlog.debug(f"Connected to {self._name} stream: {self._stream_type}, buffers: {self.client.num_buffers}")
       self._initialize_textures()
       self.available_streams = self.client.available_streams(self._name, block=False)
+      self._stall_since = None
 
     return True
+
+  def _reset_client(self) -> None:
+    self._clear_textures()
+    if self.client:
+      del self.client
+    self.client = VisionIpcClient(self._name, self._stream_type, conflate=True)
+    self.frame = None
+    self.available_streams.clear()
+    self._texture_needs_update = True
+    self.last_connection_attempt = 0.0
+    self._stall_since = None
 
   def _handle_switch(self) -> None:
     """Check if target stream is ready and switch immediately."""

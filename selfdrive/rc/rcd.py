@@ -133,6 +133,7 @@ def build_car_params() -> car.CarParams:
   cp.longitudinalActuatorDelay = 0.0
   cp.openpilotLongitudinalControl = bool(int(os.getenv("RCD_LONG_CONTROL", "0")))
   cp.pcmCruise = True
+  cp.notCar = bool(int(os.getenv("RCD_NOT_CAR", "1")))
   cp.minEnableSpeed = -1.0
   cp.minSteerSpeed = 0.0
   cp.steerAtStandstill = True
@@ -164,6 +165,7 @@ def publish_car_params_once(pm: messaging.PubMaster, params: Params, cp_reader: 
 def make_panda_states_msg(controls_allowed: bool):
   """pandaStates を1要素だけ入れたメッセージを作る。"""
   msg = messaging.new_message("pandaStates", 1)
+  msg.valid = True
   ps = msg.pandaStates[0]
   ps.pandaType = log.PandaState.PandaType.redPanda
   ps.ignitionLine = True
@@ -173,6 +175,160 @@ def make_panda_states_msg(controls_allowed: bool):
   ps.faultStatus = 0
   ps.safetyModel = car.CarParams.SafetyModel.noOutput
   ps.safetyParam = 0
+  return msg
+
+
+def make_accel_event(log_mono_time_ns: int) -> log.SensorEventData:
+  event = log.SensorEventData.new_message()
+  event.timestamp = log_mono_time_ns
+  event.version = 1
+  event.sensor = 1  # SENSOR_ACCELEROMETER
+  event.type = 1    # SENSOR_TYPE_ACCELEROMETER
+  event.source = log.SensorEventData.SensorSource.lsm6ds3
+  accel = event.init("acceleration")
+  accel.v = [0.0, 0.0, 0.0]
+  accel.status = 1
+  return event
+
+
+def make_gyro_event(log_mono_time_ns: int) -> log.SensorEventData:
+  event = log.SensorEventData.new_message()
+  event.timestamp = log_mono_time_ns
+  event.version = 2
+  event.sensor = 5  # SENSOR_GYRO_UNCALIBRATED
+  event.type = 16   # SENSOR_TYPE_GYROSCOPE_UNCALIBRATED
+  event.source = log.SensorEventData.SensorSource.lsm6ds3
+  gyro = event.init("gyroUncalibrated")
+  gyro.v = [0.0, 0.0, 0.0]
+  gyro.status = 1
+  return event
+
+
+def make_live_calibration_msg():
+  msg = messaging.new_message("liveCalibration", valid=True)
+  lc = msg.liveCalibration
+  lc.calStatus = log.LiveCalibrationData.Status.calibrated
+  lc.calPerc = 100
+  lc.calCycle = 0
+  lc.validBlocks = 1
+  lc.rpyCalib = [0.0, 0.0, 0.0]
+  lc.rpyCalibSpread = [0.0, 0.0, 0.0]
+  lc.wideFromDeviceEuler = [0.0, 0.0, 0.0]
+  lc.height = [0.0]
+  return msg
+
+
+def make_peripheral_state_msg():
+  msg = messaging.new_message("peripheralState", valid=True)
+  ps = msg.peripheralState
+  ps.pandaType = log.PandaState.PandaType.redPanda
+  ps.voltage = 12000
+  ps.current = 0
+  ps.fanSpeedRpm = 0
+  return msg
+
+
+def _fill_xyz(meas, x: float = 0.0, y: float = 0.0, z: float = 0.0, std: float = 0.1) -> None:
+  meas.x = x
+  meas.y = y
+  meas.z = z
+  meas.xStd = std
+  meas.yStd = std
+  meas.zStd = std
+  meas.valid = True
+
+
+def make_live_pose_msg():
+  msg = messaging.new_message("livePose", valid=True)
+  lp = msg.livePose
+  _fill_xyz(lp.orientationNED)
+  _fill_xyz(lp.velocityDevice)
+  _fill_xyz(lp.accelerationDevice)
+  _fill_xyz(lp.angularVelocityDevice)
+  lp.inputsOK = True
+  lp.posenetOK = True
+  lp.sensorsOK = True
+  return msg
+
+
+def make_live_parameters_msg(cp: car.CarParams):
+  msg = messaging.new_message("liveParameters", valid=True)
+  lp = msg.liveParameters
+  lp.valid = True
+  lp.sensorValid = True
+  lp.posenetValid = True
+  lp.angleOffsetDeg = 0.0
+  lp.angleOffsetAverageDeg = 0.0
+  lp.stiffnessFactor = 1.0
+  lp.steerRatio = float(cp.steerRatio)
+  lp.posenetSpeed = 0.0
+  lp.angleOffsetFastStd = 0.1
+  lp.angleOffsetAverageStd = 0.1
+  lp.stiffnessFactorStd = 0.1
+  lp.steerRatioStd = 0.1
+  lp.roll = 0.0
+  return msg
+
+
+def make_live_delay_msg():
+  msg = messaging.new_message("liveDelay", valid=True)
+  ld = msg.liveDelay
+  ld.lateralDelay = 0.1
+  ld.validBlocks = 1
+  ld.status = log.LiveDelayData.Status.estimated
+  ld.lateralDelayEstimate = ld.lateralDelay
+  ld.lateralDelayEstimateStd = 0.0
+  ld.calPerc = 100
+  ld.points = [0.0]
+  return msg
+
+
+def make_live_torque_parameters_msg():
+  msg = messaging.new_message("liveTorqueParameters", valid=True)
+  lt = msg.liveTorqueParameters
+  lt.liveValid = True
+  lt.latAccelFactorRaw = 0.0
+  lt.latAccelOffsetRaw = 0.0
+  lt.frictionCoefficientRaw = 0.0
+  lt.latAccelFactorFiltered = 0.0
+  lt.latAccelOffsetFiltered = 0.0
+  lt.frictionCoefficientFiltered = 0.0
+  lt.totalBucketPoints = 0.0
+  lt.decay = 0.0
+  lt.maxResets = 0.0
+  lt.points = []
+  lt.version = 0
+  lt.useParams = False
+  lt.calPerc = 100
+  return msg
+
+
+def make_radar_state_msg():
+  msg = messaging.new_message("radarState", valid=True)
+  rs = msg.radarState
+  rs.radarErrors.canError = False
+  rs.radarErrors.radarFault = False
+  rs.radarErrors.wrongConfig = False
+  rs.radarErrors.radarUnavailableTemporary = False
+  rs.leadOne.status = False
+  rs.leadTwo.status = False
+  return msg
+
+
+def make_gps_location_msg():
+  msg = messaging.new_message("gpsLocation", valid=True)
+  gl = msg.gpsLocation
+  gl.flags = 1
+  gl.latitude = 0.0
+  gl.longitude = 0.0
+  gl.altitude = 0.0
+  gl.speed = 0.0
+  gl.bearingDeg = 0.0
+  gl.unixTimestampMillis = int(time.time() * 1000)
+  gl.horizontalAccuracy = 1.0
+  gl.verticalAccuracy = 1.0
+  gl.speedAccuracy = 0.1
+  gl.bearingAccuracyDeg = 0.1
   return msg
 
 
@@ -237,7 +393,27 @@ def main():
   )
 
   params = Params()
-  pm = messaging.PubMaster(["pandaStates", "carState", "carParams", "carOutput"])
+  publish_imu = bool(int(os.getenv("RCD_PUBLISH_IMU", "1")))
+  publish_live_calib = bool(int(os.getenv("RCD_PUBLISH_LIVE_CALIB", "0")))
+  publish_peripheral_state = bool(int(os.getenv("RCD_PUBLISH_PERIPHERAL_STATE", "1")))
+  publish_fake_sensors = bool(int(os.getenv("RCD_PUBLISH_FAKE_SENSORS", "0")))
+  pub_services = ["pandaStates", "carState", "carParams", "carOutput"]
+  if publish_imu:
+    pub_services += ["accelerometer", "gyroscope"]
+  if publish_live_calib:
+    pub_services.append("liveCalibration")
+  if publish_peripheral_state:
+    pub_services.append("peripheralState")
+  if publish_fake_sensors:
+    pub_services += [
+      "livePose",
+      "liveParameters",
+      "liveDelay",
+      "liveTorqueParameters",
+      "radarState",
+      "gpsLocation",
+    ]
+  pm = messaging.PubMaster(pub_services)
   sm = messaging.SubMaster(["carControl"])
 
   racecar = NvidiaRacecar(type=car_type)
@@ -253,6 +429,14 @@ def main():
   rk = Ratekeeper(rate_hz, print_delay_threshold=None)
   last_cp_pub = time.monotonic()
   last_panda_pub = time.monotonic()
+  last_calib_pub = time.monotonic()
+  last_periph_pub = time.monotonic()
+  last_live_pose_pub = time.monotonic()
+  last_live_params_pub = time.monotonic()
+  last_live_delay_pub = time.monotonic()
+  last_live_torque_pub = time.monotonic()
+  last_radar_pub = time.monotonic()
+  last_gps_pub = time.monotonic()
   last_v_ego = 0.0
   last_steer_deg = 0.0
   prev_ai_enabled = False
@@ -302,11 +486,51 @@ def main():
     standstill = abs(v_ego) < 0.05
     v_cruise_kph = v_ego * 3.6
 
+    # IMU (dummy) at loop rate
+    if publish_imu:
+      acc_msg = messaging.new_message("accelerometer", valid=True)
+      acc_msg.accelerometer = make_accel_event(acc_msg.logMonoTime)
+      pm.send("accelerometer", acc_msg)
+
+      gyro_msg = messaging.new_message("gyroscope", valid=True)
+      gyro_msg.gyroscope = make_gyro_event(gyro_msg.logMonoTime)
+      pm.send("gyroscope", gyro_msg)
+
     # pandaStates at ~10Hz
     now = time.monotonic()
     if now - last_panda_pub >= 0.1:
       pm.send("pandaStates", make_panda_states_msg(ai_enabled))
       last_panda_pub = now
+
+    # peripheralState at ~2Hz
+    if publish_peripheral_state and now - last_periph_pub >= 0.5:
+      pm.send("peripheralState", make_peripheral_state_msg())
+      last_periph_pub = now
+
+    # liveCalibration at ~5Hz (optional to avoid publisher conflicts)
+    if publish_live_calib and now - last_calib_pub >= 0.2:
+      pm.send("liveCalibration", make_live_calibration_msg())
+      last_calib_pub = now
+
+    if publish_fake_sensors:
+      if now - last_live_pose_pub >= 0.05:
+        pm.send("livePose", make_live_pose_msg())
+        last_live_pose_pub = now
+      if now - last_live_params_pub >= 0.05:
+        pm.send("liveParameters", make_live_parameters_msg(cp))
+        last_live_params_pub = now
+      if now - last_live_delay_pub >= 0.25:
+        pm.send("liveDelay", make_live_delay_msg())
+        last_live_delay_pub = now
+      if now - last_live_torque_pub >= 0.25:
+        pm.send("liveTorqueParameters", make_live_torque_parameters_msg())
+        last_live_torque_pub = now
+      if now - last_radar_pub >= 0.05:
+        pm.send("radarState", make_radar_state_msg())
+        last_radar_pub = now
+      if now - last_gps_pub >= 1.0:
+        pm.send("gpsLocation", make_gps_location_msg())
+        last_gps_pub = now
 
     # carState を擬似送信（RC入力ベース）
     cs_msg = make_car_state_msg(v_ego, a_ego, steer_deg, steer_rate, standstill, ai_enabled, v_cruise_kph)
