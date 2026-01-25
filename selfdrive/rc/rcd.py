@@ -4,8 +4,6 @@
 
 import os
 import time
-from typing import Tuple
-
 from cereal import messaging, car, log
 from openpilot.common.realtime import Ratekeeper
 from openpilot.common.swaglog import cloudlog
@@ -82,7 +80,7 @@ def make_car_state_msg(v_ego: float, steer_deg: float):
   return msg
 
 
-def map_actuators_to_pwm(actuators: car.CarControl.Actuators, steer_max_deg: float, accel_gain: float) -> Tuple[float, float]:
+def map_actuators_to_pwm(actuators: car.CarControl.Actuators, steer_max_deg: float, accel_gain: float) -> tuple[float, float]:
   """carControl のアクチュエータを -1〜1 に正規化して返す。"""
   steer_cmd = 0.0
   if steer_max_deg > 0:
