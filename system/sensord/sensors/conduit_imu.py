@@ -33,6 +33,85 @@ CONDUIT_ROUTER = os.environ.get("CONDUIT_ROUTER", "tcp/192.168.1.100:7447")
 CONDUIT_DOMAIN_ID = int(os.environ.get("CONDUIT_DOMAIN_ID", "0"))
 CONDUIT_IMU_TOPIC = os.environ.get("CONDUIT_IMU_TOPIC", "conduit/imu")
 
+# iPhone mounting orientation configuration
+# Format: "SCREEN_DIRECTION,NOTCH_DIRECTION"
+# SCREEN_DIRECTION: up, down, forward, backward, left, right (which way the screen faces)
+# NOTCH_DIRECTION: forward, backward, left, right, up, down (which way the notch/top points)
+# Default: "up,forward" = screen facing up (sky), notch pointing forward
+CONDUIT_MOUNT_ORIENTATION = os.environ.get("CONDUIT_MOUNT_ORIENTATION", "up,forward")
+
+
+def get_axis_transform(mount_orientation: str) -> tuple[list[int], list[float]]:
+  """
+  Get axis indices and signs for coordinate transformation based on iPhone mounting.
+
+  iPhone coordinate system (CoreMotion):
+    X: right side of screen
+    Y: top of screen (notch side)
+    Z: out of screen (towards user)
+
+  Vehicle coordinate system (openpilot):
+    X: forward
+    Y: left
+    Z: up
+
+  Returns:
+    (indices, signs): indices[i] is which iPhone axis maps to vehicle axis i,
+                      signs[i] is the sign multiplier for that axis
+  """
+  parts = mount_orientation.lower().split(",")
+  screen_dir = parts[0].strip() if len(parts) > 0 else "up"
+  notch_dir = parts[1].strip() if len(parts) > 1 else "forward"
+
+  # iPhone axes: 0=X(right), 1=Y(top/notch), 2=Z(out of screen)
+  # Vehicle axes: 0=X(forward), 1=Y(left), 2=Z(up)
+
+  # Common mounting configurations:
+  if screen_dir == "up" and notch_dir == "forward":
+    # Screen up, notch forward: most common dashboard mount
+    # Vehicle X(forward) = iPhone Y(notch), Vehicle Y(left) = -iPhone X(right), Vehicle Z(up) = iPhone Z
+    return [1, 0, 2], [1.0, -1.0, 1.0]
+
+  elif screen_dir == "up" and notch_dir == "backward":
+    # Screen up, notch backward
+    # Vehicle X = -iPhone Y, Vehicle Y = iPhone X, Vehicle Z = iPhone Z
+    return [1, 0, 2], [-1.0, 1.0, 1.0]
+
+  elif screen_dir == "up" and notch_dir == "left":
+    # Screen up, notch left
+    # Vehicle X = -iPhone X, Vehicle Y = -iPhone Y, Vehicle Z = iPhone Z
+    return [0, 1, 2], [-1.0, -1.0, 1.0]
+
+  elif screen_dir == "up" and notch_dir == "right":
+    # Screen up, notch right
+    # Vehicle X = iPhone X, Vehicle Y = iPhone Y, Vehicle Z = iPhone Z
+    return [0, 1, 2], [1.0, 1.0, 1.0]
+
+  elif screen_dir == "forward" and notch_dir == "up":
+    # Screen facing forward (like windshield mount), notch up
+    # Vehicle X = iPhone Z, Vehicle Y = -iPhone X, Vehicle Z = iPhone Y
+    return [2, 0, 1], [1.0, -1.0, 1.0]
+
+  elif screen_dir == "forward" and notch_dir == "down":
+    # Screen facing forward, notch down (upside down windshield mount)
+    # Vehicle X = iPhone Z, Vehicle Y = iPhone X, Vehicle Z = -iPhone Y
+    return [2, 0, 1], [1.0, 1.0, -1.0]
+
+  elif screen_dir == "backward" and notch_dir == "up":
+    # Screen facing backward (rear-facing camera position), notch up
+    # Vehicle X = -iPhone Z, Vehicle Y = iPhone X, Vehicle Z = iPhone Y
+    return [2, 0, 1], [-1.0, 1.0, 1.0]
+
+  elif screen_dir == "down" and notch_dir == "forward":
+    # Screen facing down, notch forward
+    # Vehicle X = iPhone Y, Vehicle Y = iPhone X, Vehicle Z = -iPhone Z
+    return [1, 0, 2], [1.0, 1.0, -1.0]
+
+  else:
+    # Default: screen up, notch forward
+    cloudlog.warning(f"Unknown mount orientation '{mount_orientation}', using default (up,forward)")
+    return [1, 0, 2], [1.0, -1.0, 1.0]
+
 # Buffer size for incoming IMU messages
 IMU_BUFFER_SIZE = 10
 
@@ -58,11 +137,13 @@ class ConduitIMU:
   and gyroscope events compatible with openpilot's messaging system.
   """
 
-  def __init__(self, router: str = CONDUIT_ROUTER):
+  def __init__(self, router: str = CONDUIT_ROUTER, mount_orientation: str = CONDUIT_MOUNT_ORIENTATION):
     if not ZENOH_AVAILABLE:
       raise RuntimeError("zenoh-python is required for Conduit sensor. Install with: pip install eclipse-zenoh")
 
     self.router = router
+    self.mount_orientation = mount_orientation
+    self.axis_indices, self.axis_signs = get_axis_transform(mount_orientation)
     self.session: Optional[zenoh.Session] = None
     self.subscriber = None
     self._running = False
@@ -200,16 +281,13 @@ class ConduitIMU:
     event.type = 1    # SENSOR_TYPE_ACCELEROMETER
     event.source = self.source
 
-    # Axis mapping for iPhone mounted in specific orientation
-    # This may need adjustment based on actual phone mounting position
-    # Assuming phone is mounted with screen facing up, top pointing forward
-    # iPhone coordinate system: X right, Y up, Z out of screen
-    # Vehicle coordinate system: X forward, Y left, Z up
+    # Apply coordinate transformation based on mount orientation
+    iphone_accel = [imu_data.accel_x, imu_data.accel_y, imu_data.accel_z]
     a = event.init('acceleration')
     a.v = [
-      float(imu_data.accel_y),   # Forward = iPhone Y
-      float(-imu_data.accel_x),  # Left = -iPhone X
-      float(imu_data.accel_z),   # Up = iPhone Z
+      float(self.axis_signs[0] * iphone_accel[self.axis_indices[0]]),  # Vehicle X (forward)
+      float(self.axis_signs[1] * iphone_accel[self.axis_indices[1]]),  # Vehicle Y (left)
+      float(self.axis_signs[2] * iphone_accel[self.axis_indices[2]]),  # Vehicle Z (up)
     ]
     a.status = 1
 
@@ -242,12 +320,13 @@ class ConduitIMU:
     event.type = 16   # SENSOR_TYPE_GYROSCOPE_UNCALIBRATED
     event.source = self.source
 
-    # Axis mapping (same as accelerometer)
+    # Apply coordinate transformation based on mount orientation (same as accelerometer)
+    iphone_gyro = [imu_data.gyro_x, imu_data.gyro_y, imu_data.gyro_z]
     g = event.init('gyroUncalibrated')
     g.v = [
-      float(imu_data.gyro_y),   # Forward rotation
-      float(-imu_data.gyro_x),  # Left rotation
-      float(imu_data.gyro_z),   # Up rotation (yaw)
+      float(self.axis_signs[0] * iphone_gyro[self.axis_indices[0]]),  # Vehicle X (roll)
+      float(self.axis_signs[1] * iphone_gyro[self.axis_indices[1]]),  # Vehicle Y (pitch)
+      float(self.axis_signs[2] * iphone_gyro[self.axis_indices[2]]),  # Vehicle Z (yaw)
     ]
     g.status = 1
 
