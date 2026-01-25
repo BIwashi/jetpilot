@@ -211,8 +211,15 @@ class StartupAlert(Alert):
 
 # ********** helper functions **********
 def get_display_speed(speed_ms: float, metric: bool) -> str:
-  speed = int(round(speed_ms * (CV.MS_TO_KPH if metric else CV.MS_TO_MPH)))
-  unit = 'km/h' if metric else 'mph'
+  import os
+  fake_panda = os.getenv("USE_FAKE_PANDA") is not None
+  if fake_panda:
+    # ラジコンモード: cm/s で表示
+    speed = int(round(speed_ms * 100.0))
+    unit = 'cm/s'
+  else:
+    speed = int(round(speed_ms * (CV.MS_TO_KPH if metric else CV.MS_TO_MPH)))
+    unit = 'km/h' if metric else 'mph'
   return f"{speed} {unit}"
 
 

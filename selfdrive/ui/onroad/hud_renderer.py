@@ -95,8 +95,12 @@ class HudRenderer(Widget):
     self.is_cruise_set = 0 < self.set_speed < SET_SPEED_NA
     self.is_cruise_available = self.set_speed != -1
 
-    if self.is_cruise_set and not ui_state.is_metric:
-      self.set_speed *= KM_TO_MILE
+    if self.is_cruise_set:
+      if FAKE_PANDA:
+        # ラジコンモード: km/h → cm/s (km/h * 1000/36 = cm/s)
+        self.set_speed *= (100.0 / 3.6)
+      elif not ui_state.is_metric:
+        self.set_speed *= KM_TO_MILE
 
     v_ego_cluster = car_state.vEgoCluster
     self.v_ego_cluster_seen = self.v_ego_cluster_seen or v_ego_cluster != 0.0

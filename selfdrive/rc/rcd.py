@@ -103,10 +103,10 @@ def build_car_params() -> car.CarParams:
   cp.carFingerprint = car_fp
   cp.brand = "body"
 
-  # 車両物理パラメータ（ラジコン向け）
-  cp.mass = 3.0  # kg
-  cp.wheelbase = 0.26  # m
-  cp.centerToFront = cp.wheelbase * 0.5
+  # 車両物理パラメータ（Tamiya TT-02 ベース）
+  cp.mass = 1.8  # kg (バッテリー込み推定)
+  cp.wheelbase = 0.257  # m (TT-02 long wheelbase)
+  cp.centerToFront = cp.wheelbase * 0.45  # やや前寄り（バッテリー位置による）
   cp.steerRatio = 1.0  # 直接舵角制御なので1:1
 
   # VehicleModel が必要とするパラメータ（ゼロ除算回避）
@@ -261,7 +261,9 @@ def main():
   # 環境変数でパラメータ調整可能にする
   car_type = os.getenv("RCD_RACECAR_TYPE", "TT02")  # デフォルトを TT02 に
   steer_max_deg = float(os.getenv("RCD_STEER_MAX_DEG", "30.0"))
-  accel_gain = float(os.getenv("RCD_ACCEL_GAIN", "0.1"))
+  # accel[m/s^2] → スロットル変換ゲイン
+  # 1.0 m/s² で 50% スロットル程度を想定
+  accel_gain = float(os.getenv("RCD_ACCEL_GAIN", "0.5"))
   # TT02 シャーシの最大速度 (ラジコン向けスケール)
   # 最大速度 (スロットル 100% 時の速度) [m/s]
   # 実際のラジコンは約 3-5 m/s 程度
@@ -299,6 +301,10 @@ def main():
   last_steer_deg = 0.0
   last_accel = 0.0
 
+  # enable 時の速度を維持するための変数
+  was_enabled = False
+  cruise_speed_mps = 0.0  # enable 時にキャプチャされる速度 [m/s]
+
   while True:
     sm.update(0)
 
@@ -315,7 +321,15 @@ def main():
     # openpilot が有効な場合は carControl に従う
     # 無効な場合はプロポからの入力をそのままラジコンに送る
     ss = sm["selfdriveState"]
-    if ss.enabled and sm.all_valid(["carControl"]):
+    is_enabled = ss.enabled and sm.all_valid(["carControl"])
+
+    # enable された瞬間に現在速度をクルーズ速度として保存
+    if is_enabled and not was_enabled:
+      cruise_speed_mps = current_v_ego
+      cloudlog.info(f"openpilot enabled, cruise speed set to {cruise_speed_mps:.2f} m/s ({cruise_speed_mps * 100:.0f} cm/s)")
+    was_enabled = is_enabled
+
+    if is_enabled:
       cc = sm["carControl"]
       steer_cmd, throttle_cmd = map_actuators_to_pwm(cc.actuators, steer_max_deg, accel_gain)
       racecar.steering = steer_cmd
@@ -336,8 +350,9 @@ def main():
     # pandaStates を毎ループ送る
     pm.send("pandaStates", make_panda_states_msg())
 
-    # carState を擬似送信
-    pm.send("carState", make_car_state_msg(current_v_ego, last_steer_deg))
+    # carState を擬似送信 (クルーズ速度は enable 時の速度)
+    cruise_speed_kph = cruise_speed_mps * 3.6 if cruise_speed_mps > 0 else 10.0  # デフォルト 10 km/h
+    pm.send("carState", make_car_state_msg(current_v_ego, last_steer_deg, cruise_speed_kph))
 
     # carOutput を毎ループ送る（controlsd が steer_limited_by_safety を判定するのに必要）
     pm.send("carOutput", make_car_output_msg(last_steer_deg, last_accel))
