@@ -1,3 +1,4 @@
+import os
 import pyray as rl
 from dataclasses import dataclass
 from openpilot.common.constants import CV
@@ -7,6 +8,9 @@ from openpilot.system.ui.lib.application import gui_app, FontWeight
 from openpilot.system.ui.lib.multilang import tr
 from openpilot.system.ui.lib.text_measure import measure_text_cached
 from openpilot.system.ui.widgets import Widget
+
+# ラジコンモードでは m/s 表示
+FAKE_PANDA = os.getenv("USE_FAKE_PANDA") is not None
 
 # Constants
 SET_SPEED_NA = 255
@@ -97,7 +101,11 @@ class HudRenderer(Widget):
     v_ego_cluster = car_state.vEgoCluster
     self.v_ego_cluster_seen = self.v_ego_cluster_seen or v_ego_cluster != 0.0
     v_ego = v_ego_cluster if self.v_ego_cluster_seen else car_state.vEgo
-    speed_conversion = CV.MS_TO_KPH if ui_state.is_metric else CV.MS_TO_MPH
+    if FAKE_PANDA:
+      # ラジコンモード: cm/s で表示 (0〜300 程度のスケール)
+      speed_conversion = 100.0
+    else:
+      speed_conversion = CV.MS_TO_KPH if ui_state.is_metric else CV.MS_TO_MPH
     self.speed = max(0.0, v_ego * speed_conversion)
 
   def _render(self, rect: rl.Rectangle) -> None:
@@ -174,7 +182,7 @@ class HudRenderer(Widget):
     speed_pos = rl.Vector2(rect.x + rect.width / 2 - speed_text_size.x / 2, 180 - speed_text_size.y / 2)
     rl.draw_text_ex(self._font_bold, speed_text, speed_pos, FONT_SIZES.current_speed, 0, COLORS.WHITE)
 
-    unit_text = tr("km/h") if ui_state.is_metric else tr("mph")
+    unit_text = "cm/s" if FAKE_PANDA else (tr("km/h") if ui_state.is_metric else tr("mph"))
     unit_text_size = measure_text_cached(self._font_medium, unit_text, FONT_SIZES.speed_unit)
     unit_pos = rl.Vector2(rect.x + rect.width / 2 - unit_text_size.x / 2, 290 - unit_text_size.y / 2)
     rl.draw_text_ex(self._font_medium, unit_text, unit_pos, FONT_SIZES.speed_unit, 0, COLORS.WHITE_TRANSLUCENT)

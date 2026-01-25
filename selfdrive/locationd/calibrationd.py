@@ -23,7 +23,7 @@ from openpilot.common.swaglog import cloudlog
 # ラジコン (FAKE_PANDA) では低速でもキャリブレーション可能にする
 FAKE_PANDA = os.getenv("USE_FAKE_PANDA") is not None
 if FAKE_PANDA:
-  MIN_SPEED_FILTER = 2.0  # 2 m/s = 7.2 km/h (ラジコン用)
+  MIN_SPEED_FILTER = 0.1  # 0.1 m/s (ラジコン用、わずかでも動いていれば OK)
 else:
   MIN_SPEED_FILTER = 15 * CV.MPH_TO_MS  # 24 km/h (通常の車用)
 MAX_VEL_ANGLE_STD = np.radians(0.25)

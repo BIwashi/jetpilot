@@ -2,6 +2,7 @@
 # carControl を jetracer の PWM に橋渡しする簡易デーモン
 # panda/CAN を使わず、擬似的な pandaStates と carState を流しつつ PWM を出力する
 
+import json
 import os
 import time
 from cereal import messaging, car, log
@@ -9,11 +10,89 @@ from openpilot.common.realtime import Ratekeeper
 from openpilot.common.swaglog import cloudlog
 from openpilot.common.params import Params
 
+import smbus
 from jetracer.nvidia_racecar import NvidiaRacecar
+
+# I2C でプロポからの PWM 値を読み取るためのアドレス
+PROPO_I2C_ADDR = 0x08
 
 
 def _clip(x: float, lo: float, hi: float) -> float:
   return max(lo, min(hi, x))
+
+
+class PropoReader:
+  """プロポからの PWM 入力を I2C 経由で読み取る"""
+
+  def __init__(self, i2c_bus: int = 7, raw_params_path: str = None):
+    self.addr = PROPO_I2C_ADDR
+    self.bus = smbus.SMBus(i2c_bus)
+    cloudlog.info(f"PropoReader: I2C bus {i2c_bus}, addr 0x{self.addr:02x}")
+
+    # デフォルトのキャリブレーション値
+    self.steering_left = 1524
+    self.steering_center = 1524
+    self.steering_right = 1980
+    self.speed_front = 1047
+    self.speed_stop = 1507
+    self.speed_back = 1950
+
+    # raw_params.json からキャリブレーション値を読み込む
+    if raw_params_path and os.path.exists(raw_params_path):
+      try:
+        with open(raw_params_path) as f:
+          params = json.load(f)
+          self.steering_left = params["raw_steering"]["left"]
+          self.steering_center = params["raw_steering"]["center"]
+          self.steering_right = params["raw_steering"]["right"]
+          self.speed_front = params["raw_speed"]["front"]
+          self.speed_stop = params["raw_speed"]["stop"]
+          self.speed_back = params["raw_speed"]["back"]
+          cloudlog.info(f"PropoReader: loaded params from {raw_params_path}")
+      except Exception as e:
+        cloudlog.warning(f"PropoReader: failed to load {raw_params_path}: {e}")
+
+  def read_raw(self) -> tuple[int, int]:
+    """プロポから生の PWM 値を読み取る (steering, throttle)"""
+    # notebook と同じく 12 バイト読み取る
+    data = self.bus.read_i2c_block_data(self.addr, 0x01, 12)
+    raw_steering = data[0] << 24 | data[1] << 16 | data[2] << 8 | data[3]
+    raw_throttle = data[4] << 24 | data[5] << 16 | data[6] << 8 | data[7]
+    return raw_steering, raw_throttle
+
+  def get_throttle_normalized(self) -> float:
+    """スロットル開度を -1.0 (後退) ~ 0.0 (停止) ~ 1.0 (前進) で返す"""
+    _, raw_throttle = self.read_raw()
+
+    if raw_throttle <= self.speed_front:
+      # 前進最大
+      return 1.0
+    elif raw_throttle >= self.speed_back:
+      # 後退最大
+      return -1.0
+    elif raw_throttle < self.speed_stop:
+      # 前進 (front ~ stop)
+      return (self.speed_stop - raw_throttle) / (self.speed_stop - self.speed_front)
+    elif raw_throttle > self.speed_stop:
+      # 後退 (stop ~ back)
+      return -(raw_throttle - self.speed_stop) / (self.speed_back - self.speed_stop)
+    else:
+      return 0.0
+
+  def get_steering_normalized(self) -> float:
+    """ステアリング角度を -1.0 (左) ~ 0.0 (中央) ~ 1.0 (右) で返す"""
+    raw_steering, _ = self.read_raw()
+
+    if raw_steering <= self.steering_left:
+      return -1.0
+    elif raw_steering >= self.steering_right:
+      return 1.0
+    elif raw_steering < self.steering_center:
+      return -(self.steering_center - raw_steering) / (self.steering_center - self.steering_left)
+    elif raw_steering > self.steering_center:
+      return (raw_steering - self.steering_center) / (self.steering_right - self.steering_center)
+    else:
+      return 0.0
 
 
 def build_car_params() -> car.CarParams:
@@ -94,7 +173,7 @@ def make_panda_states_msg():
   return msg
 
 
-def make_car_state_msg(v_ego: float, steer_deg: float, v_cruise_kph: float = 30.0):
+def make_car_state_msg(v_ego: float, steer_deg: float, v_cruise_kph: float = 10.0):  # ラジコン向け: 10 km/h
   msg = messaging.new_message("carState")
   msg.valid = True
 
@@ -180,21 +259,29 @@ def map_actuators_to_pwm(actuators: car.CarControl.Actuators, steer_max_deg: flo
 
 def main():
   # 環境変数でパラメータ調整可能にする
-  car_type = os.getenv("RCD_RACECAR_TYPE", "OPTION")
+  car_type = os.getenv("RCD_RACECAR_TYPE", "TT02")  # デフォルトを TT02 に
   steer_max_deg = float(os.getenv("RCD_STEER_MAX_DEG", "30.0"))
   accel_gain = float(os.getenv("RCD_ACCEL_GAIN", "0.1"))
-  # TT02 シャーシの最大速度は約 30-35 km/h (ストックモーター)
+  # TT02 シャーシの最大速度 (ラジコン向けスケール)
   # 最大速度 (スロットル 100% 時の速度) [m/s]
-  v_max = float(os.getenv("RCD_VMAX_MPS", "8.3"))  # 30 km/h
+  # 実際のラジコンは約 3-5 m/s 程度
+  v_max = float(os.getenv("RCD_VMAX_MPS", "3.0"))  # 3 m/s = 10.8 km/h
   rate_hz = float(os.getenv("RCD_RATE_HZ", "100.0"))
+  i2c_bus = int(os.getenv("RCD_I2C_BUS", "7"))  # Jetson Orin Nano は 7
 
-  cloudlog.info(f"rcd starting with type={car_type}, steer_max_deg={steer_max_deg}, accel_gain={accel_gain}, rate_hz={rate_hz}")
+  # raw_params.json のパス
+  raw_params_path = os.getenv("RCD_RAW_PARAMS", "/home/jetson/workspace/jetpilot/jetracer_repo/notebooks/raw_params.json")
+
+  cloudlog.info(f"rcd starting with type={car_type}, steer_max_deg={steer_max_deg}, v_max={v_max}, rate_hz={rate_hz}")
 
   params = Params()
   pm = messaging.PubMaster(["pandaStates", "carState", "carParams", "carOutput", "accelerometer", "gyroscope"])
-  sm = messaging.SubMaster(["carControl"])
+  sm = messaging.SubMaster(["carControl", "selfdriveState"])
 
   racecar = NvidiaRacecar(type=car_type)
+
+  # プロポからの入力を読み取るためのリーダー
+  propo = PropoReader(i2c_bus=i2c_bus, raw_params_path=raw_params_path)
 
   cp = build_car_params()
   cp_bytes = cp.to_bytes()
@@ -208,14 +295,24 @@ def main():
   # 出力した actuator 値を追跡（carOutput 用）
   last_steer_deg = 0.0
   last_accel = 0.0
-  # 擬似速度 (スロットルから推定)
-  current_v_ego = 0.0
 
   while True:
     sm.update(0)
 
-    # carControl が来ていれば PWM を更新
-    if sm.all_valid(["carControl"]):
+    # プロポからの実際のスロットル入力を読み取って速度を推定
+    propo_throttle = propo.get_throttle_normalized()
+    propo_steering = propo.get_steering_normalized()
+
+    # スロットルから速度を推定 (前進のみ、後退は 0 扱い)
+    if propo_throttle > 0.05:
+      current_v_ego = v_max * propo_throttle
+    else:
+      current_v_ego = 0.0
+
+    # openpilot が有効な場合は carControl に従う
+    # 無効な場合はプロポからの入力をそのままラジコンに送る
+    ss = sm["selfdriveState"]
+    if ss.enabled and sm.all_valid(["carControl"]):
       cc = sm["carControl"]
       steer_cmd, throttle_cmd = map_actuators_to_pwm(cc.actuators, steer_max_deg, accel_gain)
       racecar.steering = steer_cmd
@@ -224,17 +321,14 @@ def main():
       # carOutput 用に実際に出力した値を記録
       last_steer_deg = cc.actuators.steeringAngleDeg
       last_accel = cc.actuators.accel
+    else:
+      # openpilot 無効時はプロポからの入力をパススルー
+      racecar.steering = propo_steering
+      racecar.throttle = propo_throttle
 
-      # スロットルから速度を推定 (簡易モデル: 即時応答)
-      # 実際のラジコンはもっと複雑だが、簡易的に線形モデルを使用
-      # throttle_cmd: -1.0 ~ 1.0
-      if throttle_cmd > 0.05:  # デッドバンド
-        current_v_ego = v_max * throttle_cmd
-      elif throttle_cmd < -0.05:  # ブレーキ/後退
-        current_v_ego = 0.0  # 簡易的に停止扱い
-      else:
-        # 惰性走行 (簡易減衰)
-        current_v_ego = current_v_ego * 0.95
+      # プロポの入力をそのまま carOutput に反映
+      last_steer_deg = propo_steering * steer_max_deg
+      last_accel = propo_throttle * (1.0 / accel_gain) if accel_gain > 0 else 0.0
 
     # pandaStates を毎ループ送る
     pm.send("pandaStates", make_panda_states_msg())
