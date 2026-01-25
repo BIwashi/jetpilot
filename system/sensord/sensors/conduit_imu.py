@@ -18,6 +18,10 @@ from cereal import log
 from openpilot.common.swaglog import cloudlog
 
 from openpilot.system.sensord.sensors.cdr_parser import parse_imu_cdr
+from openpilot.system.sensord.sensors.conduit_calibration import (
+  CalibrationData, StaticCalibrator, OnlineCalibrator,
+  load_calibration, save_calibration, apply_calibration
+)
 
 # Zenoh import - optional dependency
 try:
@@ -102,6 +106,17 @@ def get_axis_transform(mount_orientation: str) -> tuple[list[int], list[float]]:
     # Vehicle X = -iPhone Z, Vehicle Y = iPhone X, Vehicle Z = iPhone Y
     return [2, 0, 1], [-1.0, 1.0, 1.0]
 
+  elif screen_dir == "backward" and notch_dir == "left":
+    # Screen facing backward, notch left (MagSafe vertical mount, charging port right)
+    # iPhone in landscape, screen visible from driver seat, rear camera facing forward
+    # Vehicle X(forward) = -iPhone Z, Vehicle Y(left) = iPhone Y, Vehicle Z(up) = iPhone X
+    return [2, 1, 0], [-1.0, 1.0, 1.0]
+
+  elif screen_dir == "backward" and notch_dir == "right":
+    # Screen facing backward, notch right (MagSafe vertical mount, charging port left)
+    # Vehicle X(forward) = -iPhone Z, Vehicle Y(left) = -iPhone Y, Vehicle Z(up) = -iPhone X
+    return [2, 1, 0], [-1.0, -1.0, -1.0]
+
   elif screen_dir == "down" and notch_dir == "forward":
     # Screen facing down, notch forward
     # Vehicle X = iPhone Y, Vehicle Y = iPhone X, Vehicle Z = -iPhone Z
@@ -114,6 +129,9 @@ def get_axis_transform(mount_orientation: str) -> tuple[list[int], list[float]]:
 
 # Buffer size for incoming IMU messages
 IMU_BUFFER_SIZE = 10
+
+# Calibration settings
+CONDUIT_ENABLE_CALIBRATION = os.environ.get("CONDUIT_ENABLE_CALIBRATION", "1") == "1"
 
 
 @dataclass
@@ -137,7 +155,8 @@ class ConduitIMU:
   and gyroscope events compatible with openpilot's messaging system.
   """
 
-  def __init__(self, router: str = CONDUIT_ROUTER, mount_orientation: str = CONDUIT_MOUNT_ORIENTATION):
+  def __init__(self, router: str = CONDUIT_ROUTER, mount_orientation: str = CONDUIT_MOUNT_ORIENTATION,
+               enable_calibration: bool = CONDUIT_ENABLE_CALIBRATION):
     if not ZENOH_AVAILABLE:
       raise RuntimeError("zenoh-python is required for Conduit sensor. Install with: pip install eclipse-zenoh")
 
@@ -153,6 +172,15 @@ class ConduitIMU:
     self._last_recv_time = 0.0
     self.start_ts = 0.0
     self.source = log.SensorEventData.SensorSource.iOS
+
+    # Calibration
+    self.enable_calibration = enable_calibration
+    self.calibration: CalibrationData = load_calibration() if enable_calibration else CalibrationData()
+    self.static_calibrator: Optional[StaticCalibrator] = None
+    self.online_calibrator: Optional[OnlineCalibrator] = None
+    if enable_calibration:
+      self.online_calibrator = OnlineCalibrator(self.calibration)
+      cloudlog.info(f"Calibration loaded: static={self.calibration.static_calibrated}, online={self.calibration.online_calibrated}")
 
   def _on_imu_sample(self, sample: 'zenoh.Sample') -> None:
     """Callback for incoming IMU messages."""
@@ -254,6 +282,94 @@ class ConduitIMU:
         return self._data_buffer[-1]
     return None
 
+  # --- Calibration methods ---
+
+  def start_static_calibration(self) -> None:
+    """
+    Start static calibration.
+
+    Vehicle must be stationary on level ground. Collects samples for ~2 seconds
+    and computes gyro bias and roll/pitch offset from gravity vector.
+    """
+    if not self.enable_calibration:
+      cloudlog.warning("Calibration is disabled")
+      return
+    self.static_calibrator = StaticCalibrator()
+    self.static_calibrator.start()
+    cloudlog.info("Static calibration started. Keep vehicle stationary on level ground.")
+
+  def is_static_calibrating(self) -> bool:
+    """Check if static calibration is in progress."""
+    return self.static_calibrator is not None and self.static_calibrator.calibrating
+
+  def get_static_calibration_progress(self) -> float:
+    """Get static calibration progress (0.0 to 1.0)."""
+    if self.static_calibrator is None:
+      return 0.0
+    return self.static_calibrator.get_progress()
+
+  def update_calibration(self, speed: float = 0.0) -> None:
+    """
+    Update calibration with latest IMU data.
+
+    Call this regularly (e.g., at 100Hz) to:
+    - Progress static calibration if in progress
+    - Update online calibration during driving
+
+    Args:
+      speed: Current vehicle speed in m/s (for online calibration)
+    """
+    if not self.enable_calibration:
+      return
+
+    imu_data = self.get_latest_imu()
+    if imu_data is None:
+      return
+
+    # Get raw data before mount orientation transform (for calibration)
+    accel_raw = [imu_data.accel_x, imu_data.accel_y, imu_data.accel_z]
+    gyro_raw = [imu_data.gyro_x, imu_data.gyro_y, imu_data.gyro_z]
+
+    # Static calibration
+    if self.static_calibrator is not None and self.static_calibrator.calibrating:
+      done = self.static_calibrator.add_sample(accel_raw, gyro_raw)
+      if done and self.static_calibrator.result:
+        self.calibration = self.static_calibrator.result
+        save_calibration(self.calibration)
+        # Update online calibrator with new calibration
+        if self.online_calibrator:
+          self.online_calibrator.cal = self.calibration
+        self.static_calibrator = None
+
+    # Online calibration (only when not doing static calibration)
+    elif self.online_calibrator is not None and speed > 0:
+      self.calibration = self.online_calibrator.update(accel_raw, gyro_raw, speed)
+      # Periodically save online calibration
+      if self.calibration.online_sample_count % 1000 == 0 and self.calibration.online_sample_count > 0:
+        save_calibration(self.calibration)
+
+  def get_calibration_status(self) -> dict:
+    """Get current calibration status."""
+    return {
+      "enabled": self.enable_calibration,
+      "static_calibrated": self.calibration.static_calibrated,
+      "online_calibrated": self.calibration.online_calibrated,
+      "static_calibrating": self.is_static_calibrating(),
+      "static_progress": self.get_static_calibration_progress(),
+      "gyro_bias": self.calibration.gyro_bias,
+      "roll_offset_deg": self.calibration.roll_offset * 180 / 3.14159,
+      "pitch_offset_deg": self.calibration.pitch_offset * 180 / 3.14159,
+      "online_samples": self.calibration.online_sample_count,
+    }
+
+  def _apply_calibration(self, accel: list[float], gyro: list[float]) -> tuple[list[float], list[float]]:
+    """Apply calibration corrections to sensor data."""
+    if not self.enable_calibration:
+      return accel, gyro
+    return apply_calibration(accel, gyro, self.calibration)
+
+  # --- End calibration methods ---
+
   def get_accel_event(self, ts: Optional[int] = None) -> log.SensorEventData:
     """
     Get accelerometer event in openpilot format.
@@ -281,13 +397,19 @@ class ConduitIMU:
     event.type = 1    # SENSOR_TYPE_ACCELEROMETER
     event.source = self.source
 
-    # Apply coordinate transformation based on mount orientation
+    # Get raw iPhone data
     iphone_accel = [imu_data.accel_x, imu_data.accel_y, imu_data.accel_z]
+    iphone_gyro = [imu_data.gyro_x, imu_data.gyro_y, imu_data.gyro_z]
+
+    # Apply calibration (bias correction and tilt compensation)
+    cal_accel, _ = self._apply_calibration(iphone_accel, iphone_gyro)
+
+    # Apply coordinate transformation based on mount orientation
     a = event.init('acceleration')
     a.v = [
-      float(self.axis_signs[0] * iphone_accel[self.axis_indices[0]]),  # Vehicle X (forward)
-      float(self.axis_signs[1] * iphone_accel[self.axis_indices[1]]),  # Vehicle Y (left)
-      float(self.axis_signs[2] * iphone_accel[self.axis_indices[2]]),  # Vehicle Z (up)
+      float(self.axis_signs[0] * cal_accel[self.axis_indices[0]]),  # Vehicle X (forward)
+      float(self.axis_signs[1] * cal_accel[self.axis_indices[1]]),  # Vehicle Y (left)
+      float(self.axis_signs[2] * cal_accel[self.axis_indices[2]]),  # Vehicle Z (up)
     ]
     a.status = 1
 
@@ -320,13 +442,19 @@ class ConduitIMU:
     event.type = 16   # SENSOR_TYPE_GYROSCOPE_UNCALIBRATED
     event.source = self.source
 
-    # Apply coordinate transformation based on mount orientation (same as accelerometer)
+    # Get raw iPhone data
+    iphone_accel = [imu_data.accel_x, imu_data.accel_y, imu_data.accel_z]
     iphone_gyro = [imu_data.gyro_x, imu_data.gyro_y, imu_data.gyro_z]
+
+    # Apply calibration (bias correction)
+    _, cal_gyro = self._apply_calibration(iphone_accel, iphone_gyro)
+
+    # Apply coordinate transformation based on mount orientation
     g = event.init('gyroUncalibrated')
     g.v = [
-      float(self.axis_signs[0] * iphone_gyro[self.axis_indices[0]]),  # Vehicle X (roll)
-      float(self.axis_signs[1] * iphone_gyro[self.axis_indices[1]]),  # Vehicle Y (pitch)
-      float(self.axis_signs[2] * iphone_gyro[self.axis_indices[2]]),  # Vehicle Z (yaw)
+      float(self.axis_signs[0] * cal_gyro[self.axis_indices[0]]),  # Vehicle X (roll)
+      float(self.axis_signs[1] * cal_gyro[self.axis_indices[1]]),  # Vehicle Y (pitch)
+      float(self.axis_signs[2] * cal_gyro[self.axis_indices[2]]),  # Vehicle Z (yaw)
     ]
     g.status = 1
 

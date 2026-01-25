@@ -100,6 +100,10 @@ def conduit_imu_loop(exit_event: threading.Event) -> None:
 
   Receives IMU data from iPhone via Zenoh and publishes accelerometer
   and gyroscope messages to the messaging system.
+
+  Environment variables:
+    CONDUIT_STATIC_CALIBRATION=1  Start static calibration on launch
+    CONDUIT_ENABLE_CALIBRATION=1  Enable calibration (default: 1)
   """
   from openpilot.system.sensord.sensors.conduit_imu import ConduitIMU
 
@@ -107,6 +111,7 @@ def conduit_imu_loop(exit_event: threading.Event) -> None:
 
   # Get Conduit router address from environment
   router = os.environ.get("CONDUIT_ROUTER", "tcp/192.168.1.100:7447")
+  start_static_cal = os.environ.get("CONDUIT_STATIC_CALIBRATION", "0") == "1"
 
   cloudlog.info(f"Starting Conduit IMU sensor (router: {router})")
 
@@ -117,15 +122,38 @@ def conduit_imu_loop(exit_event: threading.Event) -> None:
     cloudlog.exception("Failed to initialize Conduit IMU sensor")
     return
 
+  # Start static calibration if requested
+  if start_static_cal:
+    cloudlog.info("Starting static calibration - keep vehicle stationary on level ground")
+    sensor.start_static_calibration()
+
+  # Subscribe to carState for vehicle speed (for online calibration)
+  sm = messaging.SubMaster(["carState"])
+
   rk = Ratekeeper(104, print_delay_threshold=None)  # 104Hz to match openpilot IMU rate
   last_publish_time = 0
+  last_cal_log_time = 0
 
   while not exit_event.is_set():
     try:
+      # Update carState for speed
+      sm.update(0)
+      speed = sm["carState"].vEgo if sm.updated["carState"] else 0.0
+
       if sensor.is_connected() and sensor.is_data_valid():
         imu_data = sensor.get_latest_imu()
         if imu_data is not None:
           ts = time.time_ns()
+
+          # Update calibration (static or online)
+          sensor.update_calibration(speed)
+
+          # Log calibration progress during static calibration
+          if sensor.is_static_calibrating():
+            progress = sensor.get_static_calibration_progress()
+            if time.monotonic() - last_cal_log_time > 0.5:
+              cloudlog.info(f"Static calibration progress: {progress*100:.0f}%")
+              last_cal_log_time = time.monotonic()
 
           # Publish accelerometer
           try:
