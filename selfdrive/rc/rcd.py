@@ -270,7 +270,10 @@ def main():
   i2c_bus = int(os.getenv("RCD_I2C_BUS", "7"))  # Jetson Orin Nano は 7
 
   # raw_params.json のパス
-  raw_params_path = os.getenv("RCD_RAW_PARAMS", "/home/jetson/workspace/jetpilot/jetracer_repo/notebooks/raw_params.json")
+  # デフォルトはプロジェクトルートからの相対パス
+  project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+  default_raw_params = os.path.join(project_root, "jetracer_repo", "notebooks", "raw_params.json")
+  raw_params_path = os.getenv("RCD_RAW_PARAMS", default_raw_params)
 
   cloudlog.info(f"rcd starting with type={car_type}, steer_max_deg={steer_max_deg}, v_max={v_max}, rate_hz={rate_hz}")
 
