@@ -25,7 +25,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: Add upstream remote and fetch
+      - name: Add upstream remote and fetch and fetch
         run: |
           git remote add upstream https://github.com/commaai/openpilot.git || true
           git fetch upstream master
@@ -50,6 +50,7 @@ jobs:
             echo "commits_behind=$COMMITS_BEHIND" >> $GITHUB_OUTPUT
           fi
 
+      - name: Attempt rebase onto upstream
       - name: Attempt rebase onto upstream
         if: steps.check.outputs.needs_sync == 'true'
         id: rebase
@@ -96,6 +97,7 @@ jobs:
           fi
 
       - name: Create Pull Request
+      - name: Create Pull Request
         if: steps.check.outputs.needs_sync == 'true'
         uses: peter-evans/create-pull-request@v7
         with:
@@ -105,7 +107,16 @@ jobs:
           title: "${{ steps.rebase.outputs.rebase_success == 'true' && 'Sync with upstream (commaai/openpilot)' || '[CONFLICTS] Sync with upstream (commaai/openpilot)' }}"
           body: |
             ## Upstream Sync
+        uses: peter-evans/create-pull-request@v7
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          branch: sync/upstream-master
+          base: master
+          title: "${{ steps.rebase.outputs.rebase_success == 'true' && 'Sync with upstream (commaai/openpilot)' || '[CONFLICTS] Sync with upstream (commaai/openpilot)' }}"
+          body: |
+            ## Upstream Sync
 
+            This PR syncs with the latest changes from [commaai/openpilot](https://github.com/commaai/openpilot) master branch.
             This PR syncs with the latest changes from [commaai/openpilot](https://github.com/commaai/openpilot) master branch.
 
             - **Commits behind upstream**: ${{ steps.check.outputs.commits_behind }}
