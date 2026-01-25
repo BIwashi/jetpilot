@@ -1,8 +1,8 @@
 # camerad - Camera Daemon
 
-openpilot のカメラキャプチャデーモン。VisionIPC 経由でフレームを他のプロセス（modeld, encoderd, ui など）に配信します。
+Camera capture daemon for openpilot. Distributes frames to other processes (modeld, encoderd, ui, etc.) via VisionIPC.
 
-## アーキテクチャ
+## Architecture
 
 ```
 ┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
@@ -19,104 +19,104 @@ openpilot のカメラキャプチャデーモン。VisionIPC 経由でフレー
                         └───────────┘
 ```
 
-## 対応プラットフォーム
+## Supported Platforms
 
-| プラットフォーム | 実装ファイル | 環境変数 |
-|------------------|--------------|----------|
-| QCOM/Tici (Comma 3X) | `cameras/camera_qcom2.cc` | なし（デフォルト） |
+| Platform | Implementation | Environment Variable |
+|----------|----------------|---------------------|
+| QCOM/Tici (Comma 3X) | `cameras/camera_qcom2.cc` | None (default) |
 | Jetson Orin Nano | `cameras/camera_jetson.cc` | `USE_JETSON_CAMERA=1` |
 
-## Jetson での使用方法
+## Usage on Jetson
 
-### 必要な環境変数
+### Required Environment Variables
 
 ```bash
-# 必須: Jetson実装を有効化
+# Required: Enable Jetson implementation
 export USE_JETSON_CAMERA=1
 
-# カメラ設定（デフォルト値あり）
-export ROAD_CAM=0              # センサーID（0, 1, 2...）またはGStreamerパイプライン
-export CAMERA_WIDTH=1280       # フレーム幅（デフォルト: 1280）
-export CAMERA_HEIGHT=720       # フレーム高さ（デフォルト: 720）
-export CAMERA_FPS=20           # フレームレート（デフォルト: 20）
+# Camera settings (defaults provided)
+export ROAD_CAM=0              # Sensor ID (0, 1, 2...) or GStreamer pipeline
+export CAMERA_WIDTH=1280       # Frame width (default: 1280)
+export CAMERA_HEIGHT=720       # Frame height (default: 720)
+export CAMERA_FPS=20           # Frame rate (default: 20)
 
-# オプション: 追加カメラ
-export WIDE_CAM=1              # ワイドカメラ（センサーID）
-export DRIVER_CAM=2            # ドライバーカメラ（センサーID）
+# Optional: Additional cameras
+export WIDE_CAM=1              # Wide camera (sensor ID)
+export DRIVER_CAM=2            # Driver camera (sensor ID)
 
-# カメラ無効化
-export DISABLE_ROAD=1          # ロードカメラを無効化
+# Disable cameras
+export DISABLE_ROAD=1          # Disable road camera
 ```
 
-### カスタムGStreamerパイプライン
+### Custom GStreamer Pipeline
 
-`ROAD_CAM` に数字以外を指定すると、カスタムパイプラインとして解釈されます：
+If `ROAD_CAM` contains non-numeric characters, it's interpreted as a custom pipeline:
 
 ```bash
-# カスタムパイプライン例
+# Custom pipeline example
 export ROAD_CAM='nvarguscamerasrc sensor-id=0 ! video/x-raw(memory:NVMM), width=1920, height=1080, format=NV12, framerate=30/1 ! nvvidconv ! video/x-raw, format=NV12 ! appsink name=sink emit-signals=true max-buffers=2 drop=true sync=false'
 ```
 
-### 起動
+### Running
 
 ```bash
-# 単体テスト
+# Standalone test
 USE_JETSON_CAMERA=1 ROAD_CAM=0 ./system/camerad/camerad
 
-# フルシステム（manager経由）
+# Full system (via manager)
 export USE_JETSON_CAMERA=1
 export ROAD_CAM=0
 export DISPLAY=:0
 ./system/manager/manager.py
 ```
 
-## トラブルシューティング
+## Troubleshooting
 
-### "Failed to create CaptureSession" エラー
+### "Failed to create CaptureSession" Error
 
-nvargus-daemon が不正な状態です。回復方法：
+The nvargus-daemon is in an invalid state. To recover:
 
 ```bash
-# 状態確認
+# Check status
 ./scripts/check_nvargus.sh
 
-# 回復
+# Recover
 sudo systemctl restart nvargus-daemon
 ```
 
-### カメラが検出されない
+### Camera Not Detected
 
 ```bash
-# カメラデバイス確認
+# Check camera devices
 ls -la /dev/video*
 
-# センサー確認
+# Check sensors
 v4l2-ctl --list-devices
 
-# GStreamerで直接テスト
+# Test with GStreamer directly
 gst-launch-1.0 nvarguscamerasrc sensor-id=0 ! fakesink
 ```
 
-### UIが真っ暗
+### Black Screen in UI
 
-1. nvargus-daemon の状態を確認
-2. `GST_ARGUS: Setup Complete` がログに表示されているか確認
-3. VisionIPC が正しく動作しているか確認
+1. Check nvargus-daemon status
+2. Verify `GST_ARGUS: Setup Complete` appears in logs
+3. Confirm VisionIPC is working correctly
 
-## ファイル構成
+## File Structure
 
 ```
 system/camerad/
-├── main.cc                    # エントリーポイント（プラットフォーム分岐）
-├── SConscript                 # ビルド設定
+├── main.cc                    # Entry point (platform branching)
+├── SConscript                 # Build configuration
 ├── cameras/
-│   ├── camera_common.h        # 共通インターフェース定義
-│   ├── camera_common.cc       # 共通実装（QCOM用）
-│   ├── camera_qcom2.cc        # QCOM/Spectra ISP 実装
-│   ├── camera_jetson.cc       # Jetson GStreamer 実装
-│   ├── spectra.cc/h           # Spectra ISP ドライバ
+│   ├── camera_common.h        # Common interface definitions
+│   ├── camera_common.cc       # Common implementation (QCOM)
+│   ├── camera_qcom2.cc        # QCOM/Spectra ISP implementation
+│   ├── camera_jetson.cc       # Jetson GStreamer implementation
+│   ├── spectra.cc/h           # Spectra ISP driver
 │   └── ...
-├── sensors/                   # センサードライバ（QCOM用）
+├── sensors/                   # Sensor drivers (QCOM)
 │   ├── sensor.h
 │   ├── ox03c10.cc
 │   └── os04c10.cc
@@ -124,17 +124,17 @@ system/camerad/
     └── ...
 ```
 
-## 技術詳細
+## Technical Details
 
-### Jetson 実装 (camera_jetson.cc)
+### Jetson Implementation (camera_jetson.cc)
 
-- **GStreamer C API** を使用（OpenCV経由ではない）
-- **nvarguscamerasrc** プラグインでCSIカメラをキャプチャ
-- **NV12形式** で直接出力（BGR変換なし）
-- **appsink** コールバックでフレーム処理
-- **ExitHandler** による適切なシグナル処理とクリーンアップ
+- Uses **GStreamer C API** (not via OpenCV)
+- **nvarguscamerasrc** plugin for CSI camera capture
+- Direct **NV12 format** output (no BGR conversion)
+- **appsink** callbacks for frame processing
+- Proper signal handling and cleanup via **ExitHandler**
 
-### GStreamerパイプライン
+### GStreamer Pipeline
 
 ```
 nvarguscamerasrc sensor-id=0
@@ -148,12 +148,12 @@ video/x-raw, format=NV12
 appsink (max-buffers=2, drop=true, sync=false)
 ```
 
-### 制限事項
+### Limitations
 
-- **NVENC非対応**: Jetson Orin Nano Super はハードウェアエンコーダーがないため、ソフトウェアエンコード（libx264）を使用
-- **nvargus-daemon依存**: デーモンが不正な状態になると再起動が必要
+- **No NVENC**: Jetson Orin Nano Super lacks hardware encoder, so software encoding (libx264) is used
+- **nvargus-daemon dependency**: Daemon restart required if it enters an invalid state
 
-## 関連ドキュメント
+## Related Documentation
 
 - [NVIDIA Argus Camera API](https://docs.nvidia.com/jetson/l4t-multimedia/group__LibargusAPI.html)
 - [GStreamer nvarguscamerasrc](https://docs.nvidia.com/jetson/archives/r35.3.1/DeveloperGuide/text/SD/Multimedia/AcceleratedGstreamer.html)
