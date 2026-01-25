@@ -21,6 +21,10 @@ from openpilot.system.sensord.sensors.mmc5603nj_magn import MMC5603NJ_Magn
 
 I2C_BUS_IMU = 1
 
+# Check if Conduit IMU should be used (for devices without hardware IMU)
+USE_CONDUIT_IMU = os.environ.get("CONDUIT_IMU", "0") == "1"
+
+
 def interrupt_loop(sensors: list[tuple[Sensor, str, bool]], event) -> None:
   pm = messaging.PubMaster([service for sensor, service, interrupt in sensors if interrupt])
 
@@ -89,9 +93,124 @@ def polling_loop(sensor: Sensor, service: str, event: threading.Event) -> None:
       cloudlog.exception(f"Error in {service} polling loop")
     rk.keep_time()
 
+
+def conduit_imu_loop(exit_event: threading.Event) -> None:
+  """
+  Main loop for Conduit IMU sensor.
+
+  Receives IMU data from iPhone via Zenoh and publishes accelerometer
+  and gyroscope messages to the messaging system.
+
+  Environment variables:
+    CONDUIT_STATIC_CALIBRATION=1  Start static calibration on launch
+    CONDUIT_ENABLE_CALIBRATION=1  Enable calibration (default: 1)
+  """
+  from openpilot.system.sensord.sensors.conduit_imu import ConduitIMU
+
+  pm = messaging.PubMaster(["accelerometer", "gyroscope"])
+
+  # Get Conduit router address from environment
+  router = os.environ.get("CONDUIT_ROUTER", "tcp/192.168.1.100:7447")
+  start_static_cal = os.environ.get("CONDUIT_STATIC_CALIBRATION", "0") == "1"
+
+  cloudlog.info(f"Starting Conduit IMU sensor (router: {router})")
+
+  sensor = ConduitIMU(router=router)
+  try:
+    sensor.init()
+  except Exception:
+    cloudlog.exception("Failed to initialize Conduit IMU sensor")
+    return
+
+  # Start static calibration if requested
+  if start_static_cal:
+    cloudlog.info("Starting static calibration - keep vehicle stationary on level ground")
+    sensor.start_static_calibration()
+
+  # Subscribe to carState for vehicle speed (for online calibration)
+  sm = messaging.SubMaster(["carState"])
+
+  rk = Ratekeeper(104, print_delay_threshold=None)  # 104Hz to match openpilot IMU rate
+  last_publish_time = 0
+  last_cal_log_time = 0
+
+  while not exit_event.is_set():
+    try:
+      # Update carState for speed
+      sm.update(0)
+      speed = sm["carState"].vEgo if sm.updated["carState"] else 0.0
+
+      if sensor.is_connected() and sensor.is_data_valid():
+        imu_data = sensor.get_latest_imu()
+        if imu_data is not None:
+          ts = time.time_ns()
+
+          # Update calibration (static or online)
+          sensor.update_calibration(speed)
+
+          # Log calibration progress during static calibration
+          if sensor.is_static_calibrating():
+            progress = sensor.get_static_calibration_progress()
+            if time.monotonic() - last_cal_log_time > 0.5:
+              cloudlog.info(f"Static calibration progress: {progress*100:.0f}%")
+              last_cal_log_time = time.monotonic()
+
+          # Publish accelerometer
+          try:
+            accel_evt = sensor.get_accel_event(ts)
+            msg = messaging.new_message("accelerometer", valid=True)
+            msg.accelerometer = accel_evt
+            pm.send("accelerometer", msg)
+          except Exception:
+            cloudlog.exception("Error publishing accelerometer")
+
+          # Publish gyroscope
+          try:
+            gyro_evt = sensor.get_gyro_event(ts)
+            msg = messaging.new_message("gyroscope", valid=True)
+            msg.gyroscope = gyro_evt
+            pm.send("gyroscope", msg)
+          except Exception:
+            cloudlog.exception("Error publishing gyroscope")
+
+          last_publish_time = time.monotonic()
+      else:
+        # Log connection status periodically
+        if time.monotonic() - last_publish_time > 5.0:
+          cloudlog.warning("Conduit IMU not connected or no data")
+          last_publish_time = time.monotonic()
+
+    except Exception:
+      cloudlog.exception("Error in Conduit IMU loop")
+
+    rk.keep_time()
+
+  sensor.shutdown()
+  cloudlog.info("Conduit IMU sensor shutdown complete")
+
+
 def main() -> None:
   config_realtime_process([1, ], 1)
 
+  if USE_CONDUIT_IMU:
+    # Use Conduit IMU from iPhone via Zenoh
+    cloudlog.info("Using Conduit IMU sensor from iPhone")
+    exit_event = threading.Event()
+
+    thread = threading.Thread(target=conduit_imu_loop, args=(exit_event,), daemon=True)
+    try:
+      thread.start()
+      while thread.is_alive():
+        time.sleep(1)
+    except KeyboardInterrupt:
+      pass
+    finally:
+      exit_event.set()
+      if thread.is_alive():
+        thread.join()
+    return
+
+  # Original hardware IMU code path
   sensors_cfg = [
     (LSM6DS3_Accel(I2C_BUS_IMU), "accelerometer", True),
     (LSM6DS3_Gyro(I2C_BUS_IMU), "gyroscope", True),
