@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # nvargus-daemon status check script
 # Usage: ./scripts/check_nvargus.sh
 
