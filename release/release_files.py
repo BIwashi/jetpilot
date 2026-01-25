@@ -17,6 +17,10 @@ blacklist = [
   ".gitattributes",
   ".git$",
   ".gitmodules",
+
+  # paths with spaces or special characters break shell word splitting in build_stripped.sh
+  r".*\s.*",  # any path containing whitespace
+  r".*\[.*",  # any path containing brackets
 ]
 
 # gets you through the blacklist
