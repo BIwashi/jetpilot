@@ -19,12 +19,6 @@
 [submodule "jetracer_repo"]
 	path = jetracer_repo
 	url = https://github.com/FaBoPlatform/jetracer.git
-[submodule "opencv"]
-	path = opencv
-	url = https://github.com/opencv/opencv.git
 [submodule "pocl"]
 	path = pocl
 	url = https://github.com/pocl/pocl.git
-[submodule "opencv_contrib"]
-	path = opencv_contrib
-	url = https://github.com/opencv/opencv_contrib.git
