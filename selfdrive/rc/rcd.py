@@ -141,7 +141,7 @@ def make_car_output_msg(steer_deg: float, accel: float):
   return msg
 
 
-def make_sensor_msg(sensor_type: str):
+def make_sensor_msg(sensor_type: str, log_mono_time: int):
   """擬似センサーデータを作成。selfdrived の sensorDataInvalid チェック回避用。"""
   msg = messaging.new_message(sensor_type)
   msg.valid = True
@@ -150,7 +150,8 @@ def make_sensor_msg(sensor_type: str):
   sensor.version = 1
   sensor.sensor = 0
   sensor.type = 0
-  sensor.timestamp = int(time.time() * 1e9)
+  # logMonoTime に近い値を使う（100ms 以内でないと警告が出る）
+  sensor.timestamp = log_mono_time
   sensor.source = log.SensorEventData.SensorSource.lsm6ds3
 
   if sensor_type == "accelerometer":
@@ -182,7 +183,9 @@ def main():
   car_type = os.getenv("RCD_RACECAR_TYPE", "OPTION")
   steer_max_deg = float(os.getenv("RCD_STEER_MAX_DEG", "30.0"))
   accel_gain = float(os.getenv("RCD_ACCEL_GAIN", "0.1"))
-  v_ego_stub = float(os.getenv("RCD_VEGO_MPS", "1.5"))
+  # TT02 シャーシの最大速度は約 30-35 km/h (ストックモーター)
+  # 最大速度 (スロットル 100% 時の速度) [m/s]
+  v_max = float(os.getenv("RCD_VMAX_MPS", "8.3"))  # 30 km/h
   rate_hz = float(os.getenv("RCD_RATE_HZ", "100.0"))
 
   cloudlog.info(f"rcd starting with type={car_type}, steer_max_deg={steer_max_deg}, accel_gain={accel_gain}, rate_hz={rate_hz}")
@@ -205,6 +208,8 @@ def main():
   # 出力した actuator 値を追跡（carOutput 用）
   last_steer_deg = 0.0
   last_accel = 0.0
+  # 擬似速度 (スロットルから推定)
+  current_v_ego = 0.0
 
   while True:
     sm.update(0)
@@ -220,18 +225,31 @@ def main():
       last_steer_deg = cc.actuators.steeringAngleDeg
       last_accel = cc.actuators.accel
 
+      # スロットルから速度を推定 (簡易モデル: 即時応答)
+      # 実際のラジコンはもっと複雑だが、簡易的に線形モデルを使用
+      # throttle_cmd: -1.0 ~ 1.0
+      if throttle_cmd > 0.05:  # デッドバンド
+        current_v_ego = v_max * throttle_cmd
+      elif throttle_cmd < -0.05:  # ブレーキ/後退
+        current_v_ego = 0.0  # 簡易的に停止扱い
+      else:
+        # 惰性走行 (簡易減衰)
+        current_v_ego = current_v_ego * 0.95
+
     # pandaStates を毎ループ送る
     pm.send("pandaStates", make_panda_states_msg())
 
-    # carState を擬似送信（定速・ゼロ舵角）
-    pm.send("carState", make_car_state_msg(v_ego_stub, 0.0))
+    # carState を擬似送信
+    pm.send("carState", make_car_state_msg(current_v_ego, last_steer_deg))
 
     # carOutput を毎ループ送る（controlsd が steer_limited_by_safety を判定するのに必要）
     pm.send("carOutput", make_car_output_msg(last_steer_deg, last_accel))
 
     # 擬似センサーデータを送信（selfdrived の sensorDataInvalid チェック回避）
-    pm.send("accelerometer", make_sensor_msg("accelerometer"))
-    pm.send("gyroscope", make_sensor_msg("gyroscope"))
+    # logMonoTime に近いタイムスタンプを使う
+    now_nanos = int(time.monotonic() * 1e9)
+    pm.send("accelerometer", make_sensor_msg("accelerometer", now_nanos))
+    pm.send("gyroscope", make_sensor_msg("gyroscope", now_nanos))
 
     # carParams はたまに再送（controlsd 初期化漏れを防ぐため）
     now = time.monotonic()

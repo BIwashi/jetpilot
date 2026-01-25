@@ -20,7 +20,12 @@ from openpilot.common.realtime import config_realtime_process
 from openpilot.common.transformations.orientation import rot_from_euler, euler_from_rot
 from openpilot.common.swaglog import cloudlog
 
-MIN_SPEED_FILTER = 15 * CV.MPH_TO_MS
+# ラジコン (FAKE_PANDA) では低速でもキャリブレーション可能にする
+FAKE_PANDA = os.getenv("USE_FAKE_PANDA") is not None
+if FAKE_PANDA:
+  MIN_SPEED_FILTER = 2.0  # 2 m/s = 7.2 km/h (ラジコン用)
+else:
+  MIN_SPEED_FILTER = 15 * CV.MPH_TO_MS  # 24 km/h (通常の車用)
 MAX_VEL_ANGLE_STD = np.radians(0.25)
 MAX_YAW_RATE_FILTER = np.radians(2)  # per second
 
