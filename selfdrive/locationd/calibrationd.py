@@ -20,7 +20,12 @@ from openpilot.common.realtime import config_realtime_process
 from openpilot.common.transformations.orientation import rot_from_euler, euler_from_rot
 from openpilot.common.swaglog import cloudlog
 
-MIN_SPEED_FILTER = 15 * CV.MPH_TO_MS
+# ラジコン (FAKE_PANDA) では低速でもキャリブレーション可能にする
+FAKE_PANDA = os.getenv("USE_FAKE_PANDA") is not None
+if FAKE_PANDA:
+  MIN_SPEED_FILTER = 0.1  # 0.1 m/s (ラジコン用、わずかでも動いていれば OK)
+else:
+  MIN_SPEED_FILTER = 15 * CV.MPH_TO_MS  # 24 km/h (通常の車用)
 MAX_VEL_ANGLE_STD = np.radians(0.25)
 MAX_YAW_RATE_FILTER = np.radians(2)  # per second
 
@@ -31,11 +36,20 @@ SMOOTH_CYCLES = 10
 BLOCK_SIZE = 100
 INPUTS_NEEDED = 5   # Minimum blocks needed for valid calibration
 INPUTS_WANTED = 50   # We want a little bit more than we need for stability
-MAX_ALLOWED_YAW_SPREAD = np.radians(2)
-MAX_ALLOWED_PITCH_SPREAD = np.radians(4)
+if FAKE_PANDA:
+  # ラジコンモード: カメラマウントが少し不安定なため2倍に緩和
+  MAX_ALLOWED_YAW_SPREAD = np.radians(4)
+  MAX_ALLOWED_PITCH_SPREAD = np.radians(8)
+else:
+  MAX_ALLOWED_YAW_SPREAD = np.radians(2)
+  MAX_ALLOWED_PITCH_SPREAD = np.radians(4)
 RPY_INIT = np.array([0.0,0.0,0.0])
 WIDE_FROM_DEVICE_EULER_INIT = np.array([0.0, 0.0, 0.0])
-HEIGHT_INIT = np.array([1.22])
+if FAKE_PANDA:
+  # ラジコンモード: カメラ高さ約15cm (TT02 シャーシ上)
+  HEIGHT_INIT = np.array([0.15])
+else:
+  HEIGHT_INIT = np.array([1.22])
 
 # These values are needed to accommodate the model frame in the narrow cam
 if HARDWARE.get_device_type() == 'mici':
@@ -186,7 +200,11 @@ class Calibrator:
                             road_transform_trans_std: list[float]) -> np.ndarray | None:
     self.old_rpy_weight = max(0.0, self.old_rpy_weight - 1/SMOOTH_CYCLES)
 
-    straight_and_fast = ((self.v_ego > MIN_SPEED_FILTER) and (trans[0] > MIN_SPEED_FILTER) and (abs(rot[2]) < MAX_YAW_RATE_FILTER))
+    if FAKE_PANDA:
+      # ラジコンモード: カメラオドメトリのチェックを緩和（視覚的速度推定が不正確なため）
+      straight_and_fast = (self.v_ego > MIN_SPEED_FILTER) and (abs(rot[2]) < MAX_YAW_RATE_FILTER)
+    else:
+      straight_and_fast = ((self.v_ego > MIN_SPEED_FILTER) and (trans[0] > MIN_SPEED_FILTER) and (abs(rot[2]) < MAX_YAW_RATE_FILTER))
     angle_std_threshold = MAX_VEL_ANGLE_STD
     height_std_threshold = MAX_HEIGHT_STD
     rpy_certain = np.arctan2(trans_std[1], trans[0]) < angle_std_threshold
